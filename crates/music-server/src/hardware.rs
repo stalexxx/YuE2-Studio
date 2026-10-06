@@ -221,7 +221,30 @@ fn display_adapter() -> Option<(String, f64)> {
     best_adapter(&query("DriverDesc")?, &query("HardwareInformation.qwMemorySize")?)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn display_adapter() -> Option<(String, f64)> {
+    // Apple Silicon has one GPU per machine and no separate VRAM: its memory
+    // is the system's (unified), so the whole RAM is what a model set has to
+    // share with the rest of the machine. The chip name is the only identity
+    // macOS reports for it.
+    let output = quiet("system_profiler").args(["-json", "SPDisplaysDataType"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let chip = text
+        .split("\"sppci_model\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').nth(2))
+        .filter(|name| name.starts_with("Apple "))
+        .map(str::to_string)?;
+    let ram = quiet("sysctl").args(["-n", "hw.memsize"]).output().ok().and_then(|output| {
+        std::str::from_utf8(&output.stdout).ok().and_then(|value| value.trim().parse::<u64>().ok())
+    })?;
+    Some((chip, ram as f64 / 1_000_000_000.0))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn display_adapter() -> Option<(String, f64)> {
     None
 }

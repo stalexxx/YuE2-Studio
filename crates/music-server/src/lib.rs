@@ -507,6 +507,11 @@ impl EngineOptions {
         match self.backend {
             ComputeBackend::Vulkan => true,
             ComputeBackend::Auto => {
+                if cfg!(target_os = "macos") {
+                    // The macOS engine build has no Vulkan backend; Auto there
+                    // means the engine's own best device, which is Metal.
+                    return false;
+                }
                 let hardware = hardware::hardware();
                 hardware.cuda.is_none() && hardware.gpu_name.is_some()
             }
@@ -527,17 +532,31 @@ impl EngineOptions {
         if self.backend != ComputeBackend::Auto {
             return vec![self.backend];
         }
-        let hardware = hardware::hardware();
-        let mut chain = Vec::new();
-        if hardware.cuda.is_some() {
-            chain.push(ComputeBackend::Cuda);
+        // Off Windows the engine is a single native build whose ggml loads its
+        // own best device - Metal on Apple Silicon - so Auto asks the engine
+        // to choose (no GGML_BACKEND is set) and only falls back to the
+        // processor if that start fails.
+        #[cfg(not(windows))]
+        {
+            let mut chain = vec![ComputeBackend::Auto];
+            chain.retain(|device| !failed.contains(device));
+            chain.push(ComputeBackend::Cpu);
+            return chain;
         }
-        if hardware.gpu_name.is_some() {
-            chain.push(ComputeBackend::Vulkan);
+        #[cfg(windows)]
+        {
+            let hardware = hardware::hardware();
+            let mut chain = Vec::new();
+            if hardware.cuda.is_some() {
+                chain.push(ComputeBackend::Cuda);
+            }
+            if hardware.gpu_name.is_some() {
+                chain.push(ComputeBackend::Vulkan);
+            }
+            chain.retain(|device| !failed.contains(device));
+            chain.push(ComputeBackend::Cpu);
+            chain
         }
-        chain.retain(|device| !failed.contains(device));
-        chain.push(ComputeBackend::Cpu);
-        chain
     }
 
     fn to_engine(self) -> music_engine::yue_server::YueServerOptions {
@@ -7955,9 +7974,16 @@ mod tests {
             assert_eq!(options.device_chain(&[device]), vec![device]);
         }
         // Auto always ends on the processor and never retries a failed device.
+        // Off Windows the chain starts from Auto itself - the engine's own
+        // best device, Metal on macOS - so only the CUDA/Vulkan failures of a
+        // Windows chain remove entries before it.
         let auto = EngineOptions::default();
         let chain = auto.device_chain(&[ComputeBackend::Cuda, ComputeBackend::Vulkan]);
-        assert_eq!(chain, vec![ComputeBackend::Cpu]);
+        if cfg!(windows) {
+            assert_eq!(chain, vec![ComputeBackend::Cpu]);
+        } else {
+            assert_eq!(chain, vec![ComputeBackend::Auto, ComputeBackend::Cpu]);
+        }
         assert_eq!(auto.device_chain(&[]).last(), Some(&ComputeBackend::Cpu));
     }
 
