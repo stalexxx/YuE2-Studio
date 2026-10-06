@@ -4019,7 +4019,15 @@ fn engine_bundle_root() -> PathBuf {
     env::var_os("YUE_ENGINE_ROOT")
         .map(PathBuf::from)
         .or_else(|| env::var_os("YUE_ENGINE_BIN").map(PathBuf::from).and_then(|path| path.parent().map(std::path::Path::to_path_buf)))
-        .or_else(|| std::env::current_exe().ok().and_then(|path| path.parent().map(|parent| parent.join("resources").join("yue2-cpp"))))
+        .or_else(|| std::env::current_exe().ok().and_then(|path| path.parent().map(|parent| parent.join("resources").join("yue2-cpp"))).map(|beside| {
+            // In a macOS app bundle the executable is Contents/MacOS/<name> and
+            // bundled resources are in Contents/Resources.
+            let in_bundle = beside.ancestors().nth(3).map(|contents| contents.join("Resources").join("resources").join("yue2-cpp"));
+            match in_bundle {
+                Some(path) if cfg!(target_os = "macos") && path.is_dir() => path,
+                _ => beside,
+            }
+        }))
         .unwrap_or_else(|| PathBuf::from("resources/yue2-cpp"))
 }
 
