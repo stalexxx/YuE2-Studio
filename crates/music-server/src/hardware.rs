@@ -232,16 +232,20 @@ fn display_adapter() -> Option<(String, f64)> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let chip = text
-        .split("\"sppci_model\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').nth(2))
-        .filter(|name| name.starts_with("Apple "))
-        .map(str::to_string)?;
+    let chip = apple_chip(&text)?;
     let ram = quiet("sysctl").args(["-n", "hw.memsize"]).output().ok().and_then(|output| {
         std::str::from_utf8(&output.stdout).ok().and_then(|value| value.trim().parse::<u64>().ok())
     })?;
     Some((chip, ram as f64 / 1_000_000_000.0))
+}
+
+/// The chip name from `system_profiler -json SPDisplaysDataType`: the value of
+/// `"sppci_model" : "Apple M2 Max"`.
+#[cfg(any(target_os = "macos", test))]
+fn apple_chip(profile: &str) -> Option<String> {
+    let after_key = profile.split("\"sppci_model\"").nth(1)?;
+    let name = after_key.split('"').nth(1)?;
+    name.starts_with("Apple ").then(|| name.to_string())
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -279,6 +283,14 @@ fn best_adapter(names: &str, sizes: &str) -> Option<(String, f64)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_apple_chip_is_read_from_the_system_profiler_json() {
+        let profile = r#"{ "SPDisplaysDataType" : [ { "_name" : "Apple M2 Max", "sppci_cores" : "30", "sppci_model" : "Apple M2 Max" } ] }"#;
+        assert_eq!(super::apple_chip(profile).as_deref(), Some("Apple M2 Max"));
+        assert_eq!(super::apple_chip(r#"{ "sppci_model" : "AMD Radeon Pro" }"#), None);
+        assert_eq!(super::apple_chip("{}"), None);
+    }
+
     use super::*;
 
     #[test]
