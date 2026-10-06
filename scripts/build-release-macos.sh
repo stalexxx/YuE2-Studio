@@ -14,6 +14,14 @@ if [ ! -x "$engine/yue-server" ] || [ "$(cat "$engine/runtime.commit" 2>/dev/nul
     echo "$commit" > "$engine/runtime.commit"
 fi
 
+midi="$root/desktop/src-tauri/resources/music-midi"
+midi_commit="$(sed -n 's/.*"commit": "\(.*\)".*/\1/p' "$root/engines/music-midi-source.json")"
+if [ ! -x "$midi/music-midi" ] || [ "$(cat "$midi/runtime.commit" 2>/dev/null)" != "$midi_commit" ]; then
+    rm -rf "$midi"
+    "$root/scripts/build-midi-runtime.sh" "$midi"
+    echo "$midi_commit" > "$midi/runtime.commit"
+fi
+
 cd "$root"
 npm --prefix app install
 npm --prefix desktop install

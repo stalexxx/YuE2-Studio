@@ -501,6 +501,8 @@ scripts/build-yue-runtime.sh ~/yue2-engine          # builds the pinned commit w
 YUE_ENGINE_ROOT=~/yue2-engine cargo run -p music-server
 ```
 
+Audio to MIDI is Windows-only as a download; on macOS `scripts/build-midi-runtime.sh <dir>` builds HOT-Step's `ace-midi` with Metal (point `YUE_MIDI_BIN` at the resulting `music-midi`; the dmg bundles it).
+
 `YUE_ENGINE_ROOT` (or `YUE_ENGINE_BIN`, the path of `yue-server` itself) tells the studio where
 the engine is; for the desktop app set it in the environment before launching it. `Auto` then
 lets the engine choose Metal and falls back to the CPU.

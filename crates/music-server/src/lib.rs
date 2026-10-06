@@ -5989,12 +5989,11 @@ async fn transcribe_to_midi(state: &AppState, size: &'static midi::Size, audio: 
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     // the CUDA runtime it imports lives beside the engine, as for the trainer
-    let mut path = std::ffi::OsString::from(engine_bundle_root().as_os_str());
-    if let Some(existing) = std::env::var_os("PATH") {
-        path.push(";");
-        path.push(existing);
+    let mut paths = vec![engine_bundle_root()];
+    paths.extend(std::env::var_os("PATH").iter().flat_map(std::env::split_paths));
+    if let Ok(path) = std::env::join_paths(paths) {
+        command.env("PATH", path);
     }
-    command.env("PATH", path);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
     let mut child = command.spawn().with_context(|| format!("start {}", tool.display()))?;
