@@ -190,6 +190,7 @@ export const en = {
     cancelGeneration: 'Cancel generation',
     cancelAll: 'Cancel All',
     resetGeneration: 'Reset GPU',
+    removeGeneration: 'Remove',
     schedulerType: 'Scheduler',
     dcwEnabledLabel: 'DCW Quality Correction',
     dcwHint: 'CVPR 2026, free quality boost',

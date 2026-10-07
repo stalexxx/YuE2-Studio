@@ -1047,9 +1047,10 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/transcriptions/{job_id}", get(score_job_status).post(cancel_score_job))
         .route("/v1/scores", post(compose_score))
         .route("/v1/scores/{job_id}", get(score_job_status).post(cancel_score_job))
+        .route("/v1/music/jobs/ended", get(list_ended_music_jobs))
         .route(
             "/v1/music/jobs/{job_id}",
-            get(music_job_status).post(cancel_music_job),
+            get(music_job_status).post(cancel_music_job).delete(dismiss_music_job),
         )
         .with_state(state.clone())
         // Covers and imported audio are megabytes, not kilobytes. The default
@@ -6929,6 +6930,40 @@ fn after_import(state: &AppState, song_id: &str) {
 }
 
 /// The jobs still in flight, oldest first, so a reloaded window can show them.
+/// Jobs that ended without a song, stopped or failed, newest first. They stay
+/// in the window, across restarts, until the person removes them.
+async fn list_ended_music_jobs(State(state): State<AppState>) -> Json<Vec<MusicJob>> {
+    let mut ended: Vec<MusicJob> = state
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|job| matches!(job.status, MusicJobStatus::Failed | MusicJobStatus::Cancelled))
+        .cloned()
+        .collect();
+    ended.sort_by(|a, b| b.submitted_at.cmp(&a.submitted_at));
+    Json(ended)
+}
+
+/// Removes a stopped or failed job for good; a running one is stopped first.
+async fn dismiss_music_job(State(state): State<AppState>, Path(job_id): Path<String>) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    {
+        let mut jobs = state.jobs.write().await;
+        match jobs.get(&job_id).map(|job| matches!(job.status, MusicJobStatus::Failed | MusicJobStatus::Cancelled)) {
+            None => return Err(api_error(StatusCode::NOT_FOUND, "Music job was not found.".into())),
+            Some(false) => return Err(api_error(StatusCode::CONFLICT, "The job is still running; stop it first.".into())),
+            Some(true) => {
+                jobs.remove(&job_id);
+            }
+        }
+    }
+    if let Err(error) = state.library.forget_music_job(&job_id) {
+        eprintln!("[ERROR] the job could not be removed from the library: {error:#}");
+    }
+    mcp::announce("jobs");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn list_active_music_jobs(State(state): State<AppState>) -> Json<Vec<MusicJob>> {
     let mut active: Vec<MusicJob> = state
         .jobs
