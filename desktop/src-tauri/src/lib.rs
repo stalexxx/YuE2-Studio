@@ -215,7 +215,6 @@ fn start_service() -> Result<(), String> {
 }
 
 /// True while a song is queued or rendering: the only time quitting loses work.
-#[cfg(target_os = "macos")]
 fn song_in_progress() -> bool {
     use std::io::{Read, Write};
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, SERVER_PORT);
@@ -233,7 +232,6 @@ fn song_in_progress() -> bool {
 }
 
 /// Quit, asking first only when a song is being generated.
-#[cfg(target_os = "macos")]
 fn confirm_quit(app: &tauri::AppHandle) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     let quit = !song_in_progress()
@@ -639,17 +637,25 @@ pub fn run() {
         .build(context)
         .expect("error while building YuE2 Studio")
         .run(|app, event| {
-            // Cmd+Q is one key away from Cmd+W: ask before quitting, since
-            // quitting stops a song that is being generated. An exit the app
-            // requests itself carries a code and goes through.
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
-                api.prevent_exit();
-                let app = app.clone();
-                std::thread::spawn(move || confirm_quit(&app));
+            // Quitting stops a song that is being generated, so ask first, but
+            // only then. Closing the main window quits the studio on every
+            // platform; Cmd+Q and the Dock reach it as an exit request with no
+            // code. An exit the app requests itself carries a code and goes
+            // through.
+            match &event {
+                tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. } if label == "main" && song_in_progress() => {
+                    api.prevent_close();
+                    let app = app.clone();
+                    std::thread::spawn(move || confirm_quit(&app));
+                }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::ExitRequested { code: None, api, .. } => {
+                    api.prevent_exit();
+                    let app = app.clone();
+                    std::thread::spawn(move || confirm_quit(&app));
+                }
+                _ => {}
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = (app, event);
         });
 }
 
