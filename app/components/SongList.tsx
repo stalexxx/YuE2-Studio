@@ -41,6 +41,7 @@ interface SongListProps {
     onDeleteMany?: (songs: Song[]) => void;
     onCancelJob?: (jobId: string) => void;
     onResetJob?: (jobId: string) => void;
+    onRetryJob?: (key: string) => void;
     onCancelAll?: () => void;
     onResetAll?: () => void;
     activeJobCount?: number;
@@ -101,7 +102,7 @@ const createDragPreview = (element: HTMLElement) => {
 };
 
 /** A generation's card rather than a song: being made, or stopped and waiting to be cleared. */
-const isCard = (song: Song) => Boolean(song.isGenerating) || song.stage === 'cancelled';
+const isCard = (song: Song) => Boolean(song.isGenerating) || song.stage === 'cancelled' || song.stage === 'interrupted';
 
 export const SongList: React.FC<SongListProps> = ({
     songs,
@@ -125,6 +126,7 @@ export const SongList: React.FC<SongListProps> = ({
     onCancelJob,
     onCancelAll,
     onResetJob,
+    onRetryJob,
     onResetAll,
     activeJobCount = 0,
 }) => {
@@ -317,10 +319,11 @@ export const SongList: React.FC<SongListProps> = ({
               return jobId ? () => onCancelJob?.(jobId) : undefined;
             })()}
             onResetJob={
-              song.stage === 'cancelled'
+              song.stage === 'cancelled' || song.stage === 'interrupted'
                 ? () => onResetJob?.(song.jobId || song.id)
                 : undefined
             }
+            onRetryJob={song.stage === 'interrupted' ? () => onRetryJob?.(song.id) : undefined}
         />
     );
 
@@ -576,6 +579,7 @@ interface SongItemProps {
     onSongUpdate?: (updatedSong: Song) => void;
     onCancelJob?: () => void;
     onResetJob?: () => void;
+    onRetryJob?: () => void;
     /** Opens the track this one was made from; absent when it is gone. */
     onOpenOriginal?: () => void;
     /** A stem shown under its song: its name stands where the badge naming the song would. */
@@ -602,6 +606,7 @@ const SongItem: React.FC<SongItemProps> = ({
     onSongUpdate,
     onCancelJob,
     onResetJob,
+    onRetryJob,
     onOpenOriginal,
     nested = false,
 }) => {
@@ -938,6 +943,24 @@ const SongItem: React.FC<SongItemProps> = ({
                                 {t('cancelGeneration')}
                             </button>
                         )}
+                    </div>
+                ) : song.stage === 'interrupted' && onResetJob ? (
+                    <div className="flex flex-col items-end gap-0.5">
+                        <span className="text-amber-500 text-[10px] font-sans">{t('interruptedGeneration')}</span>
+                        {onRetryJob && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onRetryJob(); }}
+                                className="text-[10px] text-pink-500 hover:text-pink-400 transition-colors font-sans font-bold"
+                            >
+                                {t('retryGeneration')}
+                            </button>
+                        )}
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onResetJob(); }}
+                            className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors font-sans"
+                        >
+                            {t('dismissGeneration')}
+                        </button>
                     </div>
                 ) : song.stage === 'cancelled' && onResetJob ? (
                     <div className="flex flex-col items-end gap-0.5">
