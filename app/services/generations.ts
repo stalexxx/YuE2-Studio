@@ -14,7 +14,6 @@ import { playlistsChanged, queryClient, readJson, updateLibraryPlaylists, update
  */
 
 const activeJobsKey = ['music', 'jobs'] as const;
-const interruptedKey = ['music', 'interrupted'] as const;
 const POLL_MS = 1_500;
 const NO_SONGS: Song[] = [];
 
@@ -62,18 +61,6 @@ function card(id: string, fields: CardFields): Song {
     tags: ['yue2'],
   };
 }
-
-/** A song asked for and not finished when the studio was last closed. */
-interface InterruptedEntry {
-  id: string;
-  title: string;
-  style: string;
-  lyrics: string;
-  submitted_at: number;
-  request?: { playlist_id?: string | null };
-}
-
-const INTERRUPTED_PREFIX = 'interrupted_';
 
 /** Asks the engine to stop a job; a refusal is told, the card is already marked. */
 async function stopJob(jobId: string): Promise<void> {
@@ -134,49 +121,6 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
     refetchInterval: query => (following > 0 || (query.state.data?.length ?? 0) > 0 ? POLL_MS : false),
     refetchIntervalInBackground: true,
   });
-
-  // What the last run of the studio did not finish: offered back as cards to
-  // make again or remove, never started on its own.
-  const interruptedList = useQuery({
-    queryKey: interruptedKey,
-    queryFn: () => readJson<InterruptedEntry[]>('/v1/music/interrupted'),
-    enabled,
-    staleTime: Infinity,
-  });
-  const interruptedCards = useMemo(() => (interruptedList.data ?? []).map(entry => ({
-    ...card(`${INTERRUPTED_PREFIX}${entry.id}`, {
-      title: entry.title,
-      style: entry.style,
-      lyrics: entry.lyrics,
-      createdAt: new Date(entry.submitted_at),
-      playlistId: entry.request?.playlist_id ?? undefined,
-    }),
-    isGenerating: false,
-    stage: 'interrupted',
-  })), [interruptedList.data]);
-
-  const retryInterrupted = useCallback(async (key: string) => {
-    const id = key.slice(INTERRUPTED_PREFIX.length);
-    try {
-      const response = await fetch(`/v1/music/interrupted/${encodeURIComponent(id)}`, { method: 'POST' });
-      const job = (await response.json().catch(() => null)) as (YueJob & { error?: string }) | null;
-      if (!response.ok || !job || job.status === 'failed') {
-        throw new Error(job?.message || job?.error || `The engine rejected this request (${response.status})`);
-      }
-    } catch (error) {
-      notify(error instanceof Error ? error.message : t('generationFailed'), 'error');
-      return;
-    }
-    // the new job comes back as a card from the list of running jobs
-    void queryClient.invalidateQueries({ queryKey: interruptedKey });
-    void queryClient.invalidateQueries({ queryKey: activeJobsKey });
-  }, [notify, t]);
-
-  const dismissInterrupted = useCallback(async (key: string) => {
-    const id = key.slice(INTERRUPTED_PREFIX.length);
-    await fetch(`/v1/music/interrupted/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => undefined);
-    void queryClient.invalidateQueries({ queryKey: interruptedKey });
-  }, []);
 
   const finish = useEffectEvent((finished: Song, job: YueJob) => {
     // newest first, as the library lists them, so the first takes the row
@@ -324,10 +268,6 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
 
   /** Drops a cancelled card, stopping its job if it still runs. */
   const reset = useCallback(async (key: string) => {
-    if (key.startsWith(INTERRUPTED_PREFIX)) {
-      await dismissInterrupted(key);
-      return;
-    }
     const target = cardsNow.current.find(entry => entry.jobId === key || entry.id === key);
     if (!target) return;
     if (target.jobId) stopped.current.add(target.jobId);
@@ -339,7 +279,7 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
         notify(error instanceof Error ? error.message : String(error), 'error');
       }
     }
-  }, [remove, notify, dismissInterrupted]);
+  }, [remove, notify]);
 
   const cancelAll = useCallback(async () => {
     // "without stopping" would send the form again the moment the queue empties
@@ -369,7 +309,7 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
     const row = song.madeByJob && madeBy.get(song.madeByJob) === song ? rowOfJob.get(song.madeByJob) : undefined;
     return row ? { ...song, viewKey: row } : song;
   }), [library, madeBy, rowOfJob]);
-  const songs = useMemo(() => (waiting.length || interruptedCards.length ? [...waiting, ...interruptedCards, ...keyed] : keyed), [waiting, interruptedCards, keyed]);
+  const songs = useMemo(() => (waiting.length ? [...waiting, ...keyed] : keyed), [waiting, keyed]);
 
   return {
     songs,
@@ -379,7 +319,6 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
     track,
     cancel,
     reset,
-    retry: retryInterrupted,
     cancelAll,
   };
 }
