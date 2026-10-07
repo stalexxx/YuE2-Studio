@@ -381,7 +381,7 @@ function AppContent() {
   const createSongs = useMemo(() => {
     if (!createScope) return generations.songs;
     const inside = new Set(createScope.songIds ?? []);
-    return generations.songs.filter(song => (song.isGenerating || song.stage === 'cancelled'
+    return generations.songs.filter(song => (song.isGenerating || song.stage === 'cancelled' || song.stage === 'interrupted'
       ? song.playlistId === createScope.id
       : inside.has(song.id)));
   }, [generations.songs, createScope]);
@@ -1214,6 +1214,7 @@ function AppContent() {
                 onSongUpdate={handleSongUpdate}
                 onCancelJob={generations.cancel}
                 onResetJob={generations.reset}
+                onRetryJob={generations.retry}
                 onCancelAll={generations.cancelAll}
                 onResetAll={generations.cancelAll}
                 activeJobCount={generations.activeJobCount}

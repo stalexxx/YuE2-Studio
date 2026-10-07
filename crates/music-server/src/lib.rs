@@ -1,4 +1,5 @@
 mod adapters;
+mod interrupted;
 mod processing;
 mod vst;
 mod training;
@@ -74,6 +75,8 @@ const PRIMARY_MUSIC_ENGINE_ID: &str = model_manager::ENGINE_ID;
 struct AppState {
     configuration: Arc<RwLock<StudioConfiguration>>,
     jobs: Arc<RwLock<HashMap<String, MusicJob>>>,
+    /// Songs asked for and not finished, to offer back after a restart.
+    journal: Arc<interrupted::Journal>,
     music_server: EngineClient,
     /// The engine's log, followed for the service's life: its recent lines and
     /// the running job's progress.
@@ -206,7 +209,7 @@ impl SamplingPreset {
 
 /// A YuE2 generation request, in the engine's own vocabulary. Fields left
 /// out are the engine's protocol defaults.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct CreateMusicJobRequest {
     /// The window's own mark for this request, handed back on the job so the
     /// window knows the job as its own before the response reaches it.
@@ -258,7 +261,7 @@ struct CreateMusicJobRequest {
 
 /// One adapter of a request: its folder and a strength per engine slot. A slot
 /// left out is not changed.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct AdapterUse {
     id: String,
     #[serde(default)]
@@ -689,6 +692,7 @@ pub async fn serve() -> anyhow::Result<()> {
             persisted.as_ref().map(|settings| settings.configuration.clone()).unwrap_or_else(initial_configuration),
         ))),
         jobs: Arc::new(RwLock::new(HashMap::new())),
+        journal: Arc::new(interrupted::Journal::open(studio_data_root().map(|root| root.join("music-jobs.json")))),
         music_server,
         engine_log,
         model_manager,
@@ -923,6 +927,8 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/transcriptions/{job_id}", get(score_job_status).post(cancel_score_job))
         .route("/v1/scores", post(compose_score))
         .route("/v1/scores/{job_id}", get(score_job_status).post(cancel_score_job))
+        .route("/v1/music/interrupted", get(list_interrupted_jobs))
+        .route("/v1/music/interrupted/{job_id}", post(retry_interrupted_job).delete(dismiss_interrupted_job))
         .route(
             "/v1/music/jobs/{job_id}",
             get(music_job_status).post(cancel_music_job),
@@ -6645,6 +6651,7 @@ async fn create_music_job(
         },
         None => None,
     };
+    let stored_request = serde_json::to_value(&request).unwrap_or(Value::Null);
     match state.music_server.submit(engine_submission(&body)).await {
         Ok(remote) => {
             let job = MusicJob {
@@ -6669,6 +6676,15 @@ async fn create_music_job(
                 laid,
             };
             state.jobs.write().await.insert(job.id.clone(), job.clone());
+            state.journal.record(interrupted::Entry {
+                id: job.id.clone(),
+                title: job.title.clone().unwrap_or_default(),
+                style: job.style.clone(),
+                lyrics: job.lyrics.clone(),
+                submitted_at: job.submitted_at,
+                interrupted: false,
+                request: stored_request,
+            });
             spawn_job_watcher(state.clone(), job.id.clone());
             (StatusCode::ACCEPTED, Json(job))
         }
@@ -6936,6 +6952,15 @@ fn add_to_playlist(library: &library::Library, playlist_id: &str, songs: impl It
 /// library, and only one task ever imports a result.
 fn spawn_job_watcher(state: AppState, job_id: String) {
     tokio::spawn(async move {
+        follow_job(&state, &job_id).await;
+        // however it ended, the song is no longer one that could be lost
+        state.journal.forget(&job_id);
+    });
+}
+
+async fn follow_job(state: &AppState, job_id: &str) {
+    let (state, job_id) = (state.clone(), job_id.to_string());
+    {
         let mut unreachable = 0u32;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -6997,7 +7022,7 @@ fn spawn_job_watcher(state: AppState, job_id: String) {
                 apply_remote_status(job, &remote.status);
             }
         }
-    });
+    }
 }
 
 async fn import_completed_result(state: &AppState, job: &MusicJob, job_id: &str) -> anyhow::Result<Vec<CompletedSong>> {
@@ -7165,6 +7190,38 @@ async fn import_completed_result(state: &AppState, job: &MusicJob, job_id: &str)
     Ok(imported)
 }
 
+/// The songs the last run of the studio did not finish.
+async fn list_interrupted_jobs(State(state): State<AppState>) -> Json<Vec<interrupted::Entry>> {
+    Json(state.journal.interrupted())
+}
+
+/// Makes an interrupted song again, from the request it was made from.
+async fn retry_interrupted_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<(StatusCode, Json<MusicJob>), (StatusCode, Json<ApiError>)> {
+    let entry = state
+        .journal
+        .interrupted()
+        .into_iter()
+        .find(|entry| entry.id == job_id)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "That song is not in the list of interrupted ones.".into()))?;
+    let mut request: CreateMusicJobRequest = serde_json::from_value(entry.request)
+        .map_err(|error| api_error(StatusCode::UNPROCESSABLE_ENTITY, format!("the saved request cannot be read: {error}")))?;
+    request.client_ref = None;
+    let (status, job) = create_music_job(State(state.clone()), Json(request)).await;
+    // kept when the engine did not take it, so it can be tried again
+    if status == StatusCode::ACCEPTED {
+        state.journal.forget(&job_id);
+    }
+    Ok((status, job))
+}
+
+async fn dismiss_interrupted_job(State(state): State<AppState>, Path(job_id): Path<String>) -> StatusCode {
+    state.journal.forget(&job_id);
+    StatusCode::NO_CONTENT
+}
+
 async fn cancel_music_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
@@ -7198,7 +7255,22 @@ async fn cancel_music_job(
         .get_mut(&job_id)
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Music job was not found.".into()))?;
     apply_remote_status(job, &remote.status);
+    stop_on_request(job);
     Ok(Json(job.clone()))
+}
+
+/// The engine ends a cancelled job at its next checkpoint, and a job that has
+/// not started yet only when its turn comes; until then it still reports
+/// "running". The person asked for the stop, so the job stops being shown as
+/// running now - the windows drop it - instead of an answer that looks as if
+/// nothing happened. The watcher ends with the job, so nothing is imported.
+fn stop_on_request(job: &mut MusicJob) {
+    if matches!(job.status, MusicJobStatus::Queued | MusicJobStatus::Running) {
+        job.status = MusicJobStatus::Cancelled;
+        job.dispatch = MusicJobDispatch::Cancelled;
+        job.phase = MusicJobPhase::Cancelled;
+        job.message = "Stopped; the engine ends it at its next checkpoint.".into();
+    }
 }
 
 /// The engine's own defaults, version and the weights it serves: the source
@@ -8277,6 +8349,18 @@ mod tests {
         let mut job = queued_not_configured_job(sample_request(), PRIMARY_MUSIC_ENGINE_ID.into());
         apply_remote_status(&mut job, "not-a-real-status");
         assert!(matches!(job.status, MusicJobStatus::Failed));
+    }
+
+    #[test]
+    fn a_stop_is_shown_at_once_but_never_undoes_a_finished_job() {
+        let mut running = queued_not_configured_job(sample_request(), PRIMARY_MUSIC_ENGINE_ID.into());
+        apply_remote_status(&mut running, "running");
+        stop_on_request(&mut running);
+        assert!(matches!(running.status, MusicJobStatus::Cancelled));
+        let mut finished = queued_not_configured_job(sample_request(), PRIMARY_MUSIC_ENGINE_ID.into());
+        apply_remote_status(&mut finished, "done");
+        stop_on_request(&mut finished);
+        assert!(matches!(finished.status, MusicJobStatus::Completed));
     }
 
     #[test]
