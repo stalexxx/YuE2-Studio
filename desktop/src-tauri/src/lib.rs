@@ -214,6 +214,41 @@ fn start_service() -> Result<(), String> {
     }
 }
 
+/// True while a song is queued or rendering: the only time quitting loses work.
+#[cfg(target_os = "macos")]
+fn song_in_progress() -> bool {
+    use std::io::{Read, Write};
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, SERVER_PORT);
+    let Ok(mut stream) = TcpStream::connect_timeout(&address.into(), Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let request = format!("GET /v1/music/jobs HTTP/1.0\r\nHost: 127.0.0.1:{SERVER_PORT}\r\n\r\n");
+    let mut response = String::new();
+    if stream.write_all(request.as_bytes()).is_err() || stream.read_to_string(&mut response).is_err() {
+        // cannot tell: ask rather than lose a song
+        return true;
+    }
+    response.split("\r\n\r\n").nth(1).is_some_and(|body| body.trim() != "[]")
+}
+
+/// Quit, asking first only when a song is being generated.
+#[cfg(target_os = "macos")]
+fn confirm_quit(app: &tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let quit = !song_in_progress()
+        || app
+            .dialog()
+            .message("A song is being generated. Quit YuE2 Studio and stop it?")
+            .title("Quit YuE2 Studio")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Quit".into(), "Cancel".into()))
+            .blocking_show();
+    if quit {
+        app.exit(0);
+    }
+}
+
 fn spawn_update_check(app: tauri::AppHandle, portable: bool) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     use tauri_plugin_updater::UpdaterExt;
@@ -541,6 +576,34 @@ pub fn run() {
             };
 
             window.build()?;
+            // The stock Quit item terminates the app, closing the window
+            // before anything can ask. Cmd+Q is a menu item of our own that
+            // asks first; the window stays up until the answer.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItem, MenuItemKind};
+                let menu = Menu::default(app.handle())?;
+                for item in menu.items()? {
+                    if let MenuItemKind::Submenu(submenu) = item {
+                        for entry in submenu.items()? {
+                            if let MenuItemKind::Predefined(predefined) = &entry {
+                                if predefined.text()?.starts_with("Quit") {
+                                    submenu.remove(predefined)?;
+                                    submenu.append(&MenuItem::with_id(app.handle(), "quit-confirm", "Quit YuE2 Studio", true, Some("CmdOrCtrl+Q"))?)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id().as_ref() != "quit-confirm" {
+                        return;
+                    }
+                    let app = app.clone();
+                    std::thread::spawn(move || confirm_quit(&app));
+                });
+            }
             if updater_configured {
                 spawn_update_check(app.handle().clone(), is_portable());
             }
@@ -573,7 +636,20 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(context)
-        .expect("error while running YuE2 Studio");
+        .build(context)
+        .expect("error while building YuE2 Studio")
+        .run(|app, event| {
+            // Cmd+Q is one key away from Cmd+W: ask before quitting, since
+            // quitting stops a song that is being generated. An exit the app
+            // requests itself carries a code and goes through.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                api.prevent_exit();
+                let app = app.clone();
+                std::thread::spawn(move || confirm_quit(&app));
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
