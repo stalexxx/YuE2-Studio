@@ -101,7 +101,7 @@ const createDragPreview = (element: HTMLElement) => {
 };
 
 /** A generation's card rather than a song: being made, or stopped and waiting to be cleared. */
-const isCard = (song: Song) => Boolean(song.isGenerating) || song.stage === 'cancelled';
+const isCard = (song: Song) => Boolean(song.isGenerating) || song.stage === 'cancelled' || song.stage === 'failed';
 
 export const SongList: React.FC<SongListProps> = ({
     songs,
@@ -317,7 +317,7 @@ export const SongList: React.FC<SongListProps> = ({
               return jobId ? () => onCancelJob?.(jobId) : undefined;
             })()}
             onResetJob={
-              song.stage === 'cancelled'
+              song.stage === 'cancelled' || song.stage === 'failed'
                 ? () => onResetJob?.(song.jobId || song.id)
                 : undefined
             }
@@ -939,14 +939,25 @@ const SongItem: React.FC<SongItemProps> = ({
                             </button>
                         )}
                     </div>
-                ) : song.stage === 'cancelled' && onResetJob ? (
+                ) : song.stage === 'failed' && onResetJob ? (
                     <div className="flex flex-col items-end gap-0.5">
-                        <span className="text-red-400 text-[10px] font-sans">{t('cancelGeneration')}</span>
+                        <span className="text-red-400 text-[10px] font-sans" title={song.failure}>{t('generationFailed')}</span>
                         <button
                             onClick={(e) => { e.stopPropagation(); onResetJob(); }}
-                            className="text-[10px] text-red-400 hover:text-red-300 transition-colors font-sans animate-pulse font-bold"
+                            className="text-[10px] text-zinc-500 hover:text-red-400 transition-colors font-sans"
                         >
-                            {t('resetGeneration')}
+                            {t('removeGeneration')}
+                        </button>
+                    </div>
+                ) : song.stage === 'cancelled' && onResetJob ? (
+                    <div className="flex flex-col items-end gap-0.5">
+                        <span className="text-red-400 text-[10px] font-sans" title={song.failure}>{t('cancelGeneration')}</span>
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onResetJob(); }}
+                            className={`text-[10px] text-red-400 hover:text-red-300 transition-colors font-sans font-bold ${song.failure ? '' : 'animate-pulse'}`}
+                        >
+                            {/* a stopped job kept by the service is only removed; the one stopped here also frees the card */}
+                            {song.failure ? t('removeGeneration') : t('resetGeneration')}
                         </button>
                     </div>
                 ) : (

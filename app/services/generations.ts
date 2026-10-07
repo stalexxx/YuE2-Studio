@@ -14,6 +14,8 @@ import { playlistsChanged, queryClient, readJson, updateLibraryPlaylists, update
  */
 
 const activeJobsKey = ['music', 'jobs'] as const;
+const endedJobsKey = ['music', 'jobs', 'ended'] as const;
+const ENDED_PREFIX = 'ended_';
 const POLL_MS = 1_500;
 const NO_SONGS: Song[] = [];
 
@@ -66,6 +68,12 @@ function card(id: string, fields: CardFields): Song {
 async function stopJob(jobId: string): Promise<void> {
   const response = await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`, { method: 'POST' });
   if (!response.ok) throw new Error(`The engine did not stop the job (${response.status})`);
+}
+
+/** Removes a stopped or failed job for good; a job still running is left (409). */
+async function removeEnded(jobId: string): Promise<void> {
+  await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' }).catch(() => undefined);
+  void queryClient.invalidateQueries({ queryKey: endedJobsKey });
 }
 
 export function useGenerations({ enabled, notify, onFinished }: GenerationOptions) {
@@ -122,6 +130,29 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
     refetchIntervalInBackground: true,
   });
 
+  // Jobs that ended without a song stay as cards, across restarts, until removed.
+  const ended = useQuery({
+    queryKey: endedJobsKey,
+    queryFn: () => readJson<YueJob[]>('/v1/music/jobs/ended'),
+    enabled,
+    staleTime: Infinity,
+  });
+  const endedCards = useMemo(() => {
+    const shown = new Set(cards.flatMap(entry => (entry.jobId ? [entry.jobId] : [])));
+    return (ended.data ?? []).filter(job => !shown.has(job.id)).map(job => ({
+      ...card(`${ENDED_PREFIX}${job.id}`, {
+        title: job.title || t('generating'),
+        style: job.style,
+        lyrics: job.lyrics,
+        createdAt: new Date(job.submitted_at),
+        playlistId: job.playlist_id,
+      }),
+      isGenerating: false,
+      stage: job.status === 'failed' ? 'failed' : 'cancelled',
+      failure: job.message,
+    }));
+  }, [ended.data, cards, t]);
+
   const finish = useEffectEvent((finished: Song, job: YueJob) => {
     // newest first, as the library lists them, so the first takes the row
     const made = (job.songs?.length ? job.songs : job.song ? [job.song] : [])
@@ -154,7 +185,9 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
       if (job.status === 'completed') {
         finish(running, job);
       } else if (job.status === 'failed' || job.status === 'cancelled') {
+        // the card leaves with the running jobs and comes back from the ended ones
         remove(running.id);
+        void queryClient.invalidateQueries({ queryKey: endedJobsKey });
         notify(job.message || t('generationFailed'), job.status === 'failed' ? 'error' : 'info');
       }
       // still queued or running: the list was read before this job was sent
@@ -268,6 +301,10 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
 
   /** Drops a cancelled card, stopping its job if it still runs. */
   const reset = useCallback(async (key: string) => {
+    if (key.startsWith(ENDED_PREFIX)) {
+      await removeEnded(key.slice(ENDED_PREFIX.length));
+      return;
+    }
     const target = cardsNow.current.find(entry => entry.jobId === key || entry.id === key);
     if (!target) return;
     if (target.jobId) stopped.current.add(target.jobId);
@@ -279,6 +316,7 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
         notify(error instanceof Error ? error.message : String(error), 'error');
       }
     }
+    if (target.jobId) await removeEnded(target.jobId);
   }, [remove, notify]);
 
   const cancelAll = useCallback(async () => {
@@ -309,7 +347,7 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
     const row = song.madeByJob && madeBy.get(song.madeByJob) === song ? rowOfJob.get(song.madeByJob) : undefined;
     return row ? { ...song, viewKey: row } : song;
   }), [library, madeBy, rowOfJob]);
-  const songs = useMemo(() => (waiting.length ? [...waiting, ...keyed] : keyed), [waiting, keyed]);
+  const songs = useMemo(() => (waiting.length || endedCards.length ? [...waiting, ...endedCards, ...keyed] : keyed), [waiting, endedCards, keyed]);
 
   return {
     songs,
@@ -327,5 +365,6 @@ if (typeof window !== 'undefined') {
   // an agent's job, or one sent before a reload, is read at once
   window.addEventListener('studio:jobs-changed', () => {
     void queryClient.invalidateQueries({ queryKey: activeJobsKey });
+    void queryClient.invalidateQueries({ queryKey: endedJobsKey });
   });
 }

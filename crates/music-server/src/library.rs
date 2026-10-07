@@ -548,6 +548,11 @@ impl Library {
         Ok(())
     }
 
+    pub fn forget_music_job(&self, id: &str) -> Result<()> {
+        self.connection.lock().unwrap().execute("DELETE FROM music_jobs WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
     /// Records that a cut-off job was started again as another.
     pub fn cancel_cut_off_music_job(&self, id: &str, resumed_as: Option<&str>, message: &str) -> Result<()> {
         self.connection.lock().unwrap().execute("UPDATE music_jobs SET status='cancelled',resumed_as=?1,message=?2 WHERE id=?3", params![resumed_as, message, id])?;

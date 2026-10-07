@@ -381,7 +381,7 @@ function AppContent() {
   const createSongs = useMemo(() => {
     if (!createScope) return generations.songs;
     const inside = new Set(createScope.songIds ?? []);
-    return generations.songs.filter(song => (song.isGenerating || song.stage === 'cancelled'
+    return generations.songs.filter(song => (song.isGenerating || song.stage === 'cancelled' || song.stage === 'failed'
       ? song.playlistId === createScope.id
       : inside.has(song.id)));
   }, [generations.songs, createScope]);
