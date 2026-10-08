@@ -319,21 +319,29 @@ export function useGenerations({ enabled, notify, onFinished }: GenerationOption
     if (target.jobId) await removeEnded(target.jobId);
   }, [remove, notify]);
 
-  const cancelAll = useCallback(async () => {
+  /**
+   * Stops the songs this window is making. With `everything` it stops every
+   * job of the service: another window's, an agent's, ones sent before this
+   * window was opened.
+   */
+  const cancelAll = useCallback(async (everything = false) => {
     // "without stopping" would send the form again the moment the queue empties
     window.dispatchEvent(new CustomEvent('yue:cancel-all'));
-    const mine = cardsNow.current.flatMap(entry => (entry.jobId && entry.isGenerating ? [entry.jobId] : []));
+    const making = cardsNow.current.filter(entry => entry.isGenerating);
+    const mine = making.flatMap(entry => (entry.jobId ? [entry.jobId] : []));
+    const marks = new Set(making.map(entry => entry.id));
     mine.forEach(id => stopped.current.add(id));
     setCards(prev => prev.filter(entry => !entry.isGenerating));
-    // The service's list, not only this window's: a request whose answer is
-    // still on its way back is on neither list here, and would run to the end.
+    // The service's list: a request whose answer is still on its way back has
+    // no job id here, but the service knows it by this window's mark.
     let listed: YueJob[] = [];
     try {
       listed = await readJson<YueJob[]>('/v1/music/jobs');
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error), 'error');
     }
-    const ids = [...new Set([...mine, ...listed.map(job => job.id)])];
+    const ours = listed.filter(job => everything || (job.client_ref && marks.has(job.client_ref)));
+    const ids = [...new Set([...mine, ...ours.map(job => job.id)])];
     ids.forEach(id => stopped.current.add(id));
     const results = await Promise.allSettled(ids.map(stopJob));
     const refused = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');

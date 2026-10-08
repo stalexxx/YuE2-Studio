@@ -375,6 +375,20 @@ function AppContent() {
       if (window.innerWidth < 768) setMobileShowList(true);
     },
   });
+  // The button's second press: every job of the service, not only this
+  // window's, so it says how many and asks.
+  const stopEverything = async () => {
+    const response = await fetch('/v1/music/jobs').catch(() => null);
+    const running = response?.ok ? ((await response.json().catch(() => [])) as unknown[]).length : 0;
+    setConfirmDialog({
+      title: t('stopEverythingTitle'),
+      message: t('stopEverythingConfirm').replace('{count}', String(running)),
+      onConfirm: () => {
+        setConfirmDialog(null);
+        void generations.cancelAll(true);
+      },
+    });
+  };
   // The list beside the form shows the playlist the songs go into, and the
   // songs being made for it; with none chosen it is the whole library.
   const createScope = playlists.find(entry => entry.id === createPlaylistId) ?? null;
@@ -1214,8 +1228,8 @@ function AppContent() {
                 onSongUpdate={handleSongUpdate}
                 onCancelJob={generations.cancel}
                 onResetJob={generations.reset}
-                onCancelAll={generations.cancelAll}
-                onResetAll={generations.cancelAll}
+                onCancelAll={() => void generations.cancelAll()}
+                onResetAll={stopEverything}
                 activeJobCount={generations.activeJobCount}
               />
             </div>
