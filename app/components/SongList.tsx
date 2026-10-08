@@ -439,7 +439,7 @@ export const SongList: React.FC<SongListProps> = ({
                                 }`}
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                                {cancelStage === 'reset' ? t('resetGeneration') : t('cancelAll')} ({activeJobCount})
+                                {cancelStage === 'reset' ? t('stopEverything') : t('cancelAll')} ({activeJobCount})
                             </button>
                         )}
                     </div>
@@ -954,10 +954,9 @@ const SongItem: React.FC<SongItemProps> = ({
                         <span className="text-red-400 text-[10px] font-sans" title={song.failure}>{t('cancelGeneration')}</span>
                         <button
                             onClick={(e) => { e.stopPropagation(); onResetJob(); }}
-                            className={`text-[10px] text-red-400 hover:text-red-300 transition-colors font-sans font-bold ${song.failure ? '' : 'animate-pulse'}`}
+                            className="text-[10px] text-red-400 hover:text-red-300 transition-colors font-sans font-bold"
                         >
-                            {/* a stopped job kept by the service is only removed; the one stopped here also frees the card */}
-                            {song.failure ? t('removeGeneration') : t('resetGeneration')}
+                            {t('removeGeneration')}
                         </button>
                     </div>
                 ) : (
